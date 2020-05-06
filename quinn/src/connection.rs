@@ -38,12 +38,41 @@ where
 
 impl<S> Connecting<S>
 where
-    S: proto::crypto::Session,
+    S: proto::crypto::Session + 'static,
 {
-    pub(crate) fn new(conn: ConnectionRef<S>, connected: oneshot::Receiver<bool>) -> Self {
-        Self {
+    pub(crate) fn new(
+        handle: ConnectionHandle,
+        conn: proto::generic::Connection<S>,
+        endpoint_events: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
+        conn_events: mpsc::UnboundedReceiver<ConnectionEvent>,
+    ) -> Connecting<S> {
+        let (on_connected_send, on_connected_recv) = oneshot::channel();
+        let conn = ConnectionRef(Arc::new(Mutex::new(ConnectionInner {
+            inner: conn,
+            driver: None,
+            handle,
+            on_connected: Some(on_connected_send),
+            connected: false,
+            timer: None,
+            conn_events,
+            endpoint_events,
+            blocked_writers: HashMap::new(),
+            blocked_readers: HashMap::new(),
+            uni_opening: Broadcast::new(),
+            bi_opening: Broadcast::new(),
+            incoming_uni_streams_reader: None,
+            incoming_bi_streams_reader: None,
+            datagram_reader: None,
+            finishing: HashMap::new(),
+            error: None,
+            ref_count: 0,
+        })));
+
+        tokio::spawn(ConnectionDriver(conn.clone()));
+
+        Connecting {
             conn: Some(conn),
-            connected,
+            connected: on_connected_recv,
         }
     }
 
@@ -215,7 +244,7 @@ where
 /// packets still in flight from the peer are handled gracefully.
 #[must_use = "connection drivers must be spawned for their connections to function"]
 #[derive(Debug)]
-pub(crate) struct ConnectionDriver<S: proto::crypto::Session>(pub(crate) ConnectionRef<S>);
+struct ConnectionDriver<S: proto::crypto::Session>(ConnectionRef<S>);
 
 impl<S> Future for ConnectionDriver<S>
 where
@@ -542,40 +571,6 @@ where
 
 #[derive(Debug)]
 pub struct ConnectionRef<S: proto::crypto::Session>(Arc<Mutex<ConnectionInner<S>>>);
-
-impl<S> ConnectionRef<S>
-where
-    S: proto::crypto::Session,
-{
-    pub(crate) fn new(
-        handle: ConnectionHandle,
-        conn: proto::generic::Connection<S>,
-        endpoint_events: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
-        conn_events: mpsc::UnboundedReceiver<ConnectionEvent>,
-        on_connected: oneshot::Sender<bool>,
-    ) -> Self {
-        Self(Arc::new(Mutex::new(ConnectionInner {
-            inner: conn,
-            driver: None,
-            handle,
-            on_connected: Some(on_connected),
-            connected: false,
-            timer: None,
-            conn_events,
-            endpoint_events,
-            blocked_writers: HashMap::new(),
-            blocked_readers: HashMap::new(),
-            uni_opening: Broadcast::new(),
-            bi_opening: Broadcast::new(),
-            incoming_uni_streams_reader: None,
-            incoming_bi_streams_reader: None,
-            datagram_reader: None,
-            finishing: HashMap::new(),
-            error: None,
-            ref_count: 0,
-        })))
-    }
-}
 
 impl<S> Clone for ConnectionRef<S>
 where
