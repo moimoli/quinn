@@ -34,6 +34,7 @@ where
 {
     conn: Option<ConnectionRef<S>>,
     connected: oneshot::Receiver<bool>,
+    auth_data_ready: Option<oneshot::Receiver<()>>,
 }
 
 impl<S> Connecting<S>
@@ -46,11 +47,13 @@ where
         endpoint_events: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
         conn_events: mpsc::UnboundedReceiver<ConnectionEvent>,
     ) -> Connecting<S> {
+        let (on_auth_data_send, on_auth_data_recv) = oneshot::channel();
         let (on_connected_send, on_connected_recv) = oneshot::channel();
         let conn = ConnectionRef(Arc::new(Mutex::new(ConnectionInner {
             inner: conn,
             driver: None,
             handle,
+            on_auth_data: Some(on_auth_data_send),
             on_connected: Some(on_connected_send),
             connected: false,
             timer: None,
@@ -73,6 +76,7 @@ where
         Connecting {
             conn: Some(conn),
             connected: on_connected_recv,
+            auth_data_ready: Some(on_auth_data_recv),
         }
     }
 
@@ -115,12 +119,21 @@ where
         }
     }
 
-    /// Data conveyed by the peer during the handshake, including cryptographic identity
+    /// Data conveyed by the peer during the handshake
     ///
     /// Since the handshake is incomplete at this point, the returned data is likely to be
     /// incomplete as well.
-    pub fn authentication_data(&self) -> S::AuthenticationData {
-        (self.conn.as_ref().unwrap().0)
+    pub async fn authentication_data(&mut self) -> S::AuthenticationData {
+        // Taking &mut self allows us to use a single oneshot channel rather than dealing with
+        // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
+        // simple.
+        if let Some(x) = self.auth_data_ready.take() {
+            let _ = x.await;
+        }
+        self.conn
+            .as_ref()
+            .unwrap()
+            .0
             .lock()
             .unwrap()
             .inner
@@ -618,6 +631,7 @@ where
     pub(crate) inner: proto::generic::Connection<S>,
     driver: Option<Waker>,
     handle: ConnectionHandle,
+    on_auth_data: Option<oneshot::Sender<()>>,
     on_connected: Option<oneshot::Sender<bool>>,
     connected: bool,
     timer: Option<Delay>,
@@ -688,6 +702,11 @@ where
         while let Some(event) = self.inner.poll() {
             use proto::Event::*;
             match event {
+                AuthenticationDataReady => {
+                    if let Some(x) = self.on_auth_data.take() {
+                        let _ = x.send(());
+                    }
+                }
                 Connected => {
                     self.connected = true;
                     if let Some(x) = self.on_connected.take() {
