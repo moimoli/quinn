@@ -146,6 +146,13 @@ where
             s.reset(err_code.into());
         }
     }
+
+    pub fn poll_stopped(&mut self, cx: &mut Context) -> Poll<Option<ErrorCode>> {
+        match self.send {
+            Some(ref mut s) => Poll::Ready(ready!(s.poll_stopped(cx)).map(Into::into)),
+            None => Poll::Pending,
+        }
+    }
 }
 
 impl<F> Future for WriteFrame<F>

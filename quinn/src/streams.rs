@@ -31,6 +31,7 @@ where
     stream: StreamId,
     is_0rtt: bool,
     finishing: Option<oneshot::Receiver<Option<WriteError>>>,
+    reset_event: Option<oneshot::Receiver<VarInt>>,
 }
 
 impl<S> SendStream<S>
@@ -43,6 +44,7 @@ where
             stream,
             is_0rtt,
             finishing: None,
+            reset_event: None,
         }
     }
 
@@ -147,6 +149,25 @@ where
         }
         conn.inner.reset(self.stream, error_code);
         conn.wake();
+    }
+
+    /// Monitor peer's STOP_SENDING issue for this stream
+    ///
+    /// This will return the reason of reset when receiving
+    pub fn poll_stopped(&mut self, cx: &mut Context) -> Poll<Option<VarInt>> {
+        let mut conn = self.conn.lock().unwrap();
+        if self.reset_event.is_none() {
+            let (send, recv) = oneshot::channel();
+            self.reset_event = Some(recv);
+            conn.stopped.insert(self.stream, send);
+        }
+
+        ready!(self
+            .reset_event
+            .as_mut()
+            .unwrap()
+            .poll_unpin(cx)
+            .map(|x| Poll::Ready(x.ok())))
     }
 
     #[doc(hidden)]

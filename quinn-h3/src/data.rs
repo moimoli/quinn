@@ -22,7 +22,7 @@ use crate::{
         ErrorCode,
     },
     streams::Reset,
-    Error,
+    Error, HttpError,
 };
 
 /// Represent data transmission completion for a Request or a Response
@@ -97,6 +97,26 @@ where
             }
         }
         self.state = SendDataState::Finished;
+    }
+
+    /// Monitor stop sending signal from the peer
+    ///
+    /// This will return `Ready` when a STOP_SENDING frame from the peer has
+    /// been received for this stream. Else, it will return `Pending` indefinitely.
+    ///
+    /// When stopped, the reason of the peer's closure will be returned. Else,
+    /// `None` will be returned, signifying the stream closure has been
+    /// triggered from another event.
+    pub fn poll_stopped(&mut self, cx: &mut Context) -> Poll<Option<HttpError>> {
+        let reason = match self.state {
+            SendDataState::Write(ref mut w) => ready!(w.poll_stopped(cx)),
+            SendDataState::Trailers(ref mut w) => ready!(w.poll_stopped(cx)),
+            _ => match self.send {
+                None => return Poll::Ready(None),
+                Some(ref mut send) => ready!(send.poll_stopped(cx)).map(Into::into),
+            },
+        };
+        Poll::Ready(reason.map(Into::into))
     }
 }
 

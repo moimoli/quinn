@@ -348,6 +348,11 @@ impl Streams {
             None => return,
         };
 
+        if let Some(stop_reason) = stop_reason {
+            self.events
+                .push_back(StreamEvent::Stopped { stop_reason, id });
+        }
+
         // Restore the portion of the send window consumed by the data that we aren't about to
         // send. We leave flow control alone because the peer's responsible for issuing additional
         // credit based on the final offset communicated in the RESET_STREAM frame we send.
@@ -1200,6 +1205,13 @@ pub enum StreamEvent {
         id: StreamId,
         /// Error code supplied by the peer if the stream was stopped
         stop_reason: Option<VarInt>,
+    },
+    /// A STOP_SENDING have been recieved for an outgoing stream
+    Stopped {
+        /// Which stream has been stopped
+        id: StreamId,
+        /// Error code supplied by the peer
+        stop_reason: VarInt,
     },
     /// At least one new stream of a certain directionality may be opened
     Available {

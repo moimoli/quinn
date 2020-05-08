@@ -63,6 +63,10 @@ impl SendHeaders {
     pub fn reset(&mut self, err_code: ErrorCode) {
         self.0.reset(err_code);
     }
+
+    pub fn poll_stopped(&mut self, cx: &mut Context) -> Poll<Option<ErrorCode>> {
+        self.0.poll_stopped(cx)
+    }
 }
 
 impl<'a> Future for SendHeaders {
