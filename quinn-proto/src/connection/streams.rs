@@ -980,12 +980,6 @@ impl Recv {
             self.assembler.insert(frame.offset, frame.data);
         }
 
-        if let RecvState::Recv { size: Some(size) } = self.state {
-            if self.assembler.is_complete_at(size) {
-                self.state = RecvState::DataRecvd { size };
-            }
-        }
-
         Ok(new_bytes)
     }
 
@@ -1014,10 +1008,13 @@ impl Recv {
                 Err(ReadError::Reset(error_code))
             }
             RecvState::Closed => panic!("tried to read from a closed stream"),
-            RecvState::Recv { .. } => Err(ReadError::Blocked),
-            RecvState::DataRecvd { .. } => {
-                self.state = RecvState::Closed;
-                Ok(())
+            RecvState::Recv { size } => {
+                if size == Some(self.assembler.limit()) && self.assembler.is_fully_read() {
+                    self.state = RecvState::Closed;
+                    Ok(())
+                } else {
+                    Err(ReadError::Blocked)
+                }
             }
         }
     }
@@ -1046,7 +1043,6 @@ impl Recv {
         match self.state {
             RecvState::Recv { size } => size,
             RecvState::ResetRecvd { size, .. } => Some(size),
-            RecvState::DataRecvd { size } => Some(size),
             _ => None,
         }
     }
@@ -1126,7 +1122,6 @@ impl SendState {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum RecvState {
     Recv { size: Option<u64> },
-    DataRecvd { size: u64 },
     ResetRecvd { size: u64, error_code: VarInt },
     Closed,
 }
