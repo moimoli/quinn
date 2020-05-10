@@ -57,6 +57,9 @@ pub use crate::shared::{ConnectionEvent, ConnectionId, EcnCodepoint, EndpointEve
 mod transport_error;
 pub use crate::transport_error::{Code as TransportErrorCode, Error as TransportError};
 
+mod congestion;
+pub use congestion::{Controller as CongestionController, NewReno, NewRenoConfig};
+
 /// Types that are generic over the crypto protocol implementation
 pub mod generic {
     pub use crate::{

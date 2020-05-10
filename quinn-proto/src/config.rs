@@ -1,4 +1,4 @@
-use std::{cmp, fmt, num::TryFromIntError, sync::Arc, time::Duration};
+use std::{fmt, num::TryFromIntError, sync::Arc, time::Duration};
 
 use err_derive::Error;
 use rand::RngCore;
@@ -7,7 +7,7 @@ use rand::RngCore;
 use crate::crypto::types::{Certificate, CertificateChain, PrivateKey};
 use crate::{
     crypto::{self, ClientConfig as _, HmacKey as _, ServerConfig as _},
-    VarInt, MAX_CID_SIZE,
+    CongestionController, NewReno, VarInt, MAX_CID_SIZE,
 };
 
 /// Parameters governing the core QUIC state machine
@@ -24,7 +24,6 @@ use crate::{
 /// performance at lower bandwidths and latencies. The default configuration is tuned for a 100Mbps
 /// link with a 100ms round trip time, with remote endpoints opening at most 320 new streams per
 /// second.
-#[derive(Debug)]
 pub struct TransportConfig {
     pub(crate) stream_window_bidi: u64,
     pub(crate) stream_window_uni: u64,
@@ -39,15 +38,15 @@ pub struct TransportConfig {
     pub(crate) initial_rtt: Duration,
 
     pub(crate) max_datagram_size: u64,
-    pub(crate) initial_window: u64,
-    pub(crate) minimum_window: u64,
-    pub(crate) loss_reduction_factor: f32,
     pub(crate) persistent_congestion_threshold: u32,
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) crypto_buffer_size: usize,
     pub(crate) allow_spin: bool,
     pub(crate) datagram_receive_buffer_size: Option<usize>,
     pub(crate) datagram_send_buffer_size: usize,
+
+    pub(crate) congestion_controller_factory:
+        Box<dyn Fn() -> Box<dyn CongestionController> + Send + Sync>,
 }
 
 impl TransportConfig {
@@ -162,28 +161,6 @@ impl TransportConfig {
         self
     }
 
-    /// Default limit on the amount of outstanding data in bytes.
-    ///
-    /// Recommended value: `min(10 * max_datagram_size, max(2 * max_datagram_size, 14720))`
-    pub fn initial_window(&mut self, value: u64) -> &mut Self {
-        self.initial_window = value;
-        self
-    }
-
-    /// Default minimum congestion window.
-    ///
-    /// Recommended value: `2 * max_datagram_size`.
-    pub fn minimum_window(&mut self, value: u64) -> &mut Self {
-        self.minimum_window = value;
-        self
-    }
-
-    /// Reduction in congestion window when a new loss event is detected.
-    pub fn loss_reduction_factor(&mut self, value: f32) -> &mut Self {
-        self.loss_reduction_factor = value;
-        self
-    }
-
     /// Number of consecutive PTOs after which network is considered to be experiencing persistent congestion.
     pub fn persistent_congestion_threshold(&mut self, value: u32) -> &mut Self {
         self.persistent_congestion_threshold = value;
@@ -238,6 +215,17 @@ impl TransportConfig {
         self.datagram_send_buffer_size = value;
         self
     }
+
+    /// Function used to construct new `CongestionController`s
+    ///
+    /// Defaults to `|| Box::new(NewReno::default())`.
+    pub fn congestion_controller_factory(
+        &mut self,
+        factory: impl Fn() -> Box<dyn CongestionController> + Send + Sync + 'static,
+    ) -> &mut Self {
+        self.congestion_controller_factory = Box::new(factory);
+        self
+    }
 }
 
 impl Default for TransportConfig {
@@ -263,19 +251,46 @@ impl Default for TransportConfig {
             initial_rtt: Duration::from_millis(500), // per spec, intentionally distinct from EXPECTED_RTT
 
             max_datagram_size: MAX_DATAGRAM_SIZE,
-            initial_window: cmp::min(
-                10 * MAX_DATAGRAM_SIZE,
-                cmp::max(2 * MAX_DATAGRAM_SIZE, 14720),
-            ),
-            minimum_window: 2 * MAX_DATAGRAM_SIZE,
-            loss_reduction_factor: 0.5,
             persistent_congestion_threshold: 3,
             keep_alive_interval: None,
             crypto_buffer_size: 16 * 1024,
             allow_spin: true,
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
             datagram_send_buffer_size: 1024 * 1024,
+
+            congestion_controller_factory: Box::new(|| Box::new(NewReno::default())),
         }
+    }
+}
+
+impl fmt::Debug for TransportConfig {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("TranportConfig")
+            .field("stream_window_bidi", &self.stream_window_bidi)
+            .field("stream_window_uni", &self.stream_window_uni)
+            .field("max_idle_timeout", &self.max_idle_timeout)
+            .field("stream_receive_window", &self.stream_receive_window)
+            .field("receive_window", &self.receive_window)
+            .field("send_window", &self.send_window)
+            .field("max_tlps", &self.max_tlps)
+            .field("packet_threshold", &self.packet_threshold)
+            .field("time_threshold", &self.time_threshold)
+            .field("initial_rtt", &self.initial_rtt)
+            .field("max_datagram_size", &self.max_datagram_size)
+            .field(
+                "persistent_congestion_threshold",
+                &self.persistent_congestion_threshold,
+            )
+            .field("keep_alive_interval", &self.keep_alive_interval)
+            .field("crypto_buffer_size", &self.crypto_buffer_size)
+            .field("allow_wpin", &self.allow_spin)
+            .field(
+                "datagram_receive_buffer_size",
+                &self.datagram_receive_buffer_size,
+            )
+            .field("datagram_send_buffer_size", &self.datagram_send_buffer_size)
+            .field("congestion_controller_factory", &"[ opaque ]")
+            .finish()
     }
 }
 
