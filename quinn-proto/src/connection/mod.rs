@@ -2363,7 +2363,7 @@ where
     fn populate_packet(
         &mut self,
         space_id: SpaceId,
-        minimum_length: usize,
+        min_size: usize,
         buf: &mut Vec<u8>,
     ) -> SentFrames {
         let mut sent = SentFrames::default();
@@ -2518,18 +2518,23 @@ where
                 break;
             }
             self.datagrams.outgoing_total -= datagram.data.len();
-            datagram.encode(true, buf);
+            // This is the last frame, and can therefore omit the length tag, if there are no
+            // following datagrams or stream frames and no padding will be needed.
+            let is_last_frame = self.datagrams.outgoing.is_empty()
+                && !self.streams.has_stream_frames()
+                && buf.len() + datagram.data.len() >= min_size;
+            datagram.encode(!is_last_frame, buf);
         }
 
         // STREAM
         if space_id == SpaceId::Data {
-            sent.stream_frames = self.streams.write_stream_frames(buf, max_size);
+            sent.stream_frames = self.streams.write_stream_frames(buf, min_size, max_size);
         }
 
         // PADDING
-        if buf.len() < minimum_length {
-            trace!("PADDING * {}", minimum_length - buf.len());
-            buf.resize(minimum_length, 0);
+        if buf.len() < min_size {
+            trace!("PADDING * {}", min_size - buf.len());
+            buf.resize(min_size, 0);
             sent.padding = true;
         }
 

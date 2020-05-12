@@ -484,18 +484,29 @@ impl Streams {
         }
     }
 
+    /// Whether `write_stream_frames` might write frames
+    ///
+    /// `false` guarantees no frames, but `true` does not guarantee frames.
+    pub fn has_stream_frames(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Append stream frames to `buf`
+    ///
+    /// Must be called after all frames save for padding have been added.
     pub fn write_stream_frames(
         &mut self,
         buf: &mut Vec<u8>,
-        max_frame_size: usize,
+        min_buf_size: usize,
+        max_buf_size: usize,
     ) -> Vec<frame::StreamMeta> {
         let mut stream_frames = Vec::new();
-        while buf.len() + frame::Stream::SIZE_BOUND < max_frame_size {
-            let max_data_len =
-                match max_frame_size.checked_sub(buf.len() + frame::Stream::SIZE_BOUND) {
-                    Some(x) => x,
-                    None => break,
-                };
+        while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
+            let max_data_len = match max_buf_size.checked_sub(buf.len() + frame::Stream::SIZE_BOUND)
+            {
+                Some(x) => x,
+                None => break,
+            };
             let id = match self.pending.pop() {
                 Some(x) => x,
                 None => break,
@@ -523,8 +534,12 @@ impl Streams {
             }
 
             let meta = frame::StreamMeta { id, offsets, fin };
-            trace!(id = %meta.id, off = meta.offsets.start, len = meta.offsets.end - meta.offsets.start, fin = meta.fin, "STREAM");
-            meta.encode(true, buf);
+            let len = (meta.offsets.end - meta.offsets.start) as usize;
+            trace!(id = %meta.id, off = meta.offsets.start, len, fin = meta.fin, "STREAM");
+            // This is the last frame, and can therefore omit the length tag, if there are no
+            // following stream frames and no padding will be needed.
+            let is_last_frame = self.pending.is_empty() && buf.len() + len >= min_buf_size;
+            meta.encode(!is_last_frame, buf);
             buf.put_slice(stream.pending.get(meta.offsets.clone()));
             stream_frames.push(meta);
         }
